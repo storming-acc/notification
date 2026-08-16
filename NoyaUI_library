@@ -1,0 +1,889 @@
+-- ========================== NOYAUI NOTIFICATION SYSTEM (ULTIMATE - FINAL FIX) ==========================
+-- All features: buttons, colors, icons, rich text, corner radius, custom type icons,
+-- progress bar, tooltips, queue, update, timer display, duplicate prevention, grouping,
+-- custom sound, dynamic position change. Always returns a table with an ID.
+-- [+] ADDED: Automatic Scaling based on Text Size & Full Custom Width/Height Support
+
+-- ========== GLOBALS ==========
+shared.NoyaDismissKey = shared.NoyaDismissKey or Enum.KeyCode.N
+shared.NoyaNotificationsByPosition = shared.NoyaNotificationsByPosition or {}
+shared.NoyaNotificationQueue = shared.NoyaNotificationQueue or {}
+shared.NoyaNotificationGroups = shared.NoyaNotificationGroups or {}
+
+local notificationsByPosition = shared.NoyaNotificationsByPosition
+local notificationQueue = shared.NoyaNotificationQueue
+local notificationGroups = shared.NoyaNotificationGroups
+
+local NoyaUI = {}
+local activeClosers = {}
+local notificationIdCounter = 0
+
+-- Store tooltip connections separately
+local tooltipConnections = {}
+
+-- ========== SERVICES ==========
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local ParentTarget = game:GetService("CoreGui")
+local Debris = game:GetService("Debris")
+local RunService = game:GetService("RunService")
+local TextService = game:GetService("TextService")
+
+-- ========== FOLDER MANAGEMENT ==========
+local function ensureFolder(path)
+    if not isfolder then return false end
+    if not isfolder(path) then
+        local success, err = pcall(function() makefolder(path) end)
+        if not success then
+            warn("[NoyaUI] Failed to create folder: " .. path .. " - " .. tostring(err))
+            return false
+        end
+    end
+    return true
+end
+
+local NOYA_FOLDER = "NoyaUI"
+local ASSETS_FOLDER = NOYA_FOLDER .. "/assets"
+if ensureFolder(NOYA_FOLDER) then
+    ensureFolder(ASSETS_FOLDER)
+end
+
+-- ========== HELPERS ==========
+local function getDirectDriveLink(url)
+    if type(url) ~= "string" then return url end
+    local fileId = string.match(url, "/file/d/([%w%-_]+)")
+    if not fileId then
+        fileId = string.match(url, "[?&]id=([%w%-_]+)")
+    end
+    if fileId then
+        return "https://drive.google.com/uc?export=download&id=" .. fileId
+    end
+    return url
+end
+
+local decalCache = {}
+local function getImageId(decalId)
+    if type(decalId) ~= "number" and not decalId:match("^%d+$") then return nil end
+    local id = tonumber(decalId)
+    if decalCache[id] then return decalCache[id] end
+    local url = "https://assetdelivery.roblox.com/v1/asset/?id=" .. tostring(id)
+    local success, content = pcall(function() return game:HttpGet(url) end)
+    if success and content then
+        local imageId = string.match(content, "<url>.-id=(%d+)")
+        if imageId then
+            decalCache[id] = "rbxassetid://" .. imageId
+            return decalCache[id]
+        end
+    end
+    return nil
+end
+
+function resolveImageInput(raw)
+    if raw == nil then return nil end
+    local rawStr = tostring(raw)
+    rawStr = getDirectDriveLink(rawStr)
+    if rawStr:match("^rbxasset") then return rawStr end
+    if rawStr:match("^%d+$") then
+        local imageAsset = getImageId(rawStr)
+        if imageAsset then return imageAsset end
+        return "rbxassetid://" .. rawStr
+    end
+    if rawStr:match("^https?://") then
+        if not isfile or not writefile or not getcustomasset then
+            warn("[NoyaUI] Executor does not support custom assets. Using raw URL.")
+            return rawStr
+        end
+        local fileName = rawStr:match("([^/]+)$") or "image"
+        fileName = fileName:gsub("[^%w%-_%.]", "_")
+        if #fileName > 50 then fileName = fileName:sub(1, 50) end
+        if not fileName:match("%.[^.]+$") then fileName = fileName .. ".png" end
+        local fullPath = ASSETS_FOLDER .. "/" .. fileName
+        if not isfile(fullPath) then
+            local success, response = pcall(function() return game:HttpGet(rawStr) end)
+            if success and response then
+                pcall(function() writefile(fullPath, response) end)
+            else
+                warn("[NoyaUI] Failed to download image from URL: " .. rawStr)
+                return rawStr
+            end
+        end
+        local success, asset = pcall(function() return getcustomasset(fullPath) end)
+        if success and asset then return asset end
+        return rawStr
+    end
+    return rawStr
+end
+
+function BuildElement(class, parent, props)
+    local el = Instance.new(class, parent)
+    for k, v in pairs(props) do
+        if k == "UICorner" then
+            Instance.new("UICorner", el)
+        elseif k == "RichText" and class:match("Text") then
+            el.RichText = v
+        else
+            el[k] = v
+        end
+    end
+    return el
+end
+
+-- ========== POSITIONS ==========
+local POSITIONS = {
+    TopRight    = { X = 550, Y = 1 },
+    TopLeft     = { X = 1,   Y = 1 },
+    BottomRight = { X = 550, Y = 165 },
+    BottomLeft  = { X = 1,   Y = 165 },
+    Center      = { X = 255, Y = 100 },
+}
+local HORIZONTAL_SPACING = 220
+local VERTICAL_SPACING = 10
+
+function computePosition(notifData, indexInGroup)
+    local data = notifData.positionData
+    local notifWidth = notifData.Frame.Size.X.Offset
+    local notifHeight = notifData.Frame.Size.Y.Offset
+    local posType = data.posType
+
+    if posType == "Center" then
+        local centerX = data.baseX
+        if indexInGroup == 1 then
+            return centerX, data.baseY
+        elseif indexInGroup % 2 == 0 then
+            local offset = (indexInGroup // 2) * HORIZONTAL_SPACING
+            return centerX - offset, data.baseY
+        else
+            local offset = ((indexInGroup - 1) // 2) * HORIZONTAL_SPACING
+            return centerX + offset, data.baseY
+        end
+    else
+        local isBottom = data.isBottom
+        if isBottom then
+            return data.baseX, data.baseY - ((indexInGroup - 1) * (notifHeight + VERTICAL_SPACING))
+        else
+            return data.baseX, data.baseY + ((indexInGroup - 1) * (notifHeight + VERTICAL_SPACING))
+        end
+    end
+end
+
+function updatePositionsForPosition(positionKey)
+    local list = notificationsByPosition[positionKey]
+    if not list then return end
+    for i, notif in ipairs(list) do
+        if notif and notif.Frame then
+            local targetX, targetY = computePosition(notif, i)
+            TweenService:Create(notif.Frame, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
+                Position = UDim2.new(0, targetX, 0, targetY)
+            }):Play()
+        end
+    end
+end
+
+-- ========== GLOBAL DISMISS ==========
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == shared.NoyaDismissKey then
+        local allNotifs = {}
+        for _, list in pairs(notificationsByPosition) do
+            for _, notif in ipairs(list) do
+                if notif then table.insert(allNotifs, notif) end
+            end
+        end
+        for _, notif in ipairs(allNotifs) do
+            if activeClosers[notif] then task.spawn(activeClosers[notif], true) end
+        end
+    end
+end)
+
+-- ========== QUEUE PROCESSING ==========
+local function processQueue()
+    while #notificationQueue > 0 do
+        local queued = table.remove(notificationQueue, 1)
+        if not queued.closed then
+            local posKey = queued.positionType or "BottomRight"
+            local list = notificationsByPosition[posKey]
+            if not list then list = {} notificationsByPosition[posKey] = list end
+            if #list < 5 then
+                local notifData = NoyaUI:Notify(queued.config)
+                if notifData and queued.updateCallback then
+                    queued.updateCallback(notifData)
+                end
+            else
+                table.insert(notificationQueue, 1, queued)
+                break
+            end
+        end
+    end
+end
+
+-- ========== GENERATE UNIQUE ID ==========
+function NoyaUI:GenerateID()
+    notificationIdCounter = notificationIdCounter + 1
+    return "Noya_" .. tostring(notificationIdCounter)
+end
+
+-- ========== MAIN NOTIFY ==========
+function NoyaUI:Notify(config)
+    local id = config.ID or NoyaUI:GenerateID()
+    config.ID = id
+
+    -- Prevent duplicates
+    for _, list in pairs(notificationsByPosition) do
+        for _, notif in ipairs(list) do
+            if notif and notif.id == id and not notif.closed then
+                return notif
+            end
+        end
+    end
+
+    local positionType = config.Position or "BottomRight"
+    local list = notificationsByPosition[positionType]
+    if not list then list = {} notificationsByPosition[positionType] = list end
+
+    if #list >= 5 then
+        local queued = { config = config, positionType = positionType, closed = false }
+        table.insert(notificationQueue, queued)
+        local placeholder = { id = id, queued = true, closed = false }
+        queued.updateCallback = function(actualNotif)
+            placeholder.queued = false
+            placeholder.Frame = actualNotif.Frame
+            placeholder.Gui = actualNotif.Gui
+            placeholder.positionData = actualNotif.positionData
+            placeholder.closeFunction = actualNotif.closeFunction
+        end
+        task.spawn(processQueue)
+        return placeholder
+    end
+
+    -- Defaults
+    local titleText = config.Title or "Notification"
+    local descText = config.Desc or ""
+    local duration = config.Duration or 5
+    local notifType = config.Type or "Info"
+    local onClick = config.OnClick
+    local onClose = config.OnClose
+    local onHoverEnter = config.OnHoverEnter
+    local onHoverLeave = config.OnHoverLeave
+    local rawImage = config.Image
+    local customImage = rawImage and resolveImageInput(rawImage) or nil
+    local cornerRadius = config.CornerRadius or 8
+    local richText = config.RichText == true
+    local customIcon = config.Icon
+    local progress = config.Progress
+    local groupKey = config.Group
+    local soundId = config.SoundId
+    local showTimer = config.ShowTimer == true
+    local autoSize = config.AutoSize == nil and true or config.AutoSize
+
+    local buttons = config.Buttons or {}
+    if #buttons > 2 then buttons = {buttons[1], buttons[2]} end
+
+    -- Sizing Core Variables
+    local BUTTON_HEIGHT = 30
+    local BUTTON_GAP = 23
+    local IMAGE_HEIGHT = config.ImageHeight or 60
+    local PROGRESS_HEIGHT = 6
+    local PROGRESS_PADDING = 4
+    
+    -- Dynamic Custom Size
+    local notifWidth = config.Width or 200
+
+    -- Dynamic Text Scaling Calculation
+    local descHeight = 28
+    if autoSize and descText and descText ~= "" then
+        -- Strip rich text tags for accurate boundary measurement
+        local cleanText = descText
+        if richText then cleanText = cleanText:gsub("<[^>]+>", "") end
+        
+        local bounds = TextService:GetTextSize(
+            cleanText, 
+            10, 
+            Enum.Font.Gotham, -- Using Gotham as approximation for FredokaOne bounds
+            Vector2.new(notifWidth - 20, 10000)
+        )
+        descHeight = math.max(28, bounds.Y + 4)
+    end
+
+    local extraHeight = 0
+    if #buttons > 0 then extraHeight = BUTTON_HEIGHT + BUTTON_GAP + 4 end
+    if progress then extraHeight = extraHeight + PROGRESS_HEIGHT + PROGRESS_PADDING + 4 end
+
+    local imageHeight = 0
+    if customImage then imageHeight = IMAGE_HEIGHT end
+
+    local notifHeight
+    if config.Height then
+        -- Force Exact Override
+        notifHeight = config.Height + imageHeight + (imageHeight > 0 and 5 or 0) + extraHeight
+    else
+        -- Perfect Auto Size Layout
+        notifHeight = 22 + descHeight + (imageHeight > 0 and imageHeight + 5 or 0) + extraHeight + 15
+    end
+
+    local isLeftSide = (positionType == "TopLeft" or positionType == "BottomLeft")
+
+    -- Type colors / icons
+    local typeColor, defaultIcon
+    if notifType == "Error" then
+        typeColor = Color3.fromRGB(255, 82, 82)
+        defaultIcon = "rbxassetid://113114601887005"
+    elseif notifType == "Success" then
+        typeColor = Color3.fromRGB(145, 255, 128)
+        defaultIcon = "rbxassetid://18567015051"
+    elseif notifType == "Warn" then
+        typeColor = Color3.fromRGB(255, 225, 117)
+        defaultIcon = "rbxassetid://14863060512"
+    else
+        typeColor = Color3.fromRGB(158, 198, 255)
+        defaultIcon = "rbxassetid://70718918423383"
+    end
+    local iconId = customIcon and resolveImageInput(customIcon) or defaultIcon
+
+    if groupKey then
+        if not notificationGroups[groupKey] then
+            notificationGroups[groupKey] = { count = 0, notifications = {} }
+        end
+        notificationGroups[groupKey].count = notificationGroups[groupKey].count + 1
+    end
+
+    local pos = POSITIONS[positionType] or POSITIONS.BottomRight
+    local isBottom = (positionType == "BottomLeft" or positionType == "BottomRight")
+
+    if not notificationsByPosition[positionType] then
+        notificationsByPosition[positionType] = {}
+    end
+    local positionList = notificationsByPosition[positionType]
+
+    if #positionList >= 5 then
+        local oldest = table.remove(positionList, 1)
+        if oldest and oldest.Gui then oldest.Gui:Destroy() end
+        updatePositionsForPosition(positionType)
+    end
+
+    -- Build GUI
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "NoyaNotificationLibrary"
+    ScreenGui.Parent = ParentTarget
+    ScreenGui.ClipToDeviceSafeArea = false
+    ScreenGui.ResetOnSpawn = false
+
+    local Folder = Instance.new("Folder", ScreenGui)
+    Folder.Name = "NoyaUI"
+
+    local MainFrame = BuildElement("Frame", Folder, {
+        Name = "MainFrame", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        Size = UDim2.new(0, notifWidth, 0, notifHeight), UICorner = true,
+        ClipsDescendants = true 
+    })
+    if MainFrame:FindFirstChild("UICorner") then
+        MainFrame.UICorner.CornerRadius = UDim.new(0, cornerRadius)
+    end
+
+    if onClick then MainFrame.MouseButton1Click:Connect(function() pcall(onClick) end) end
+
+    -- Glow
+    BuildElement("ImageLabel", MainFrame, {
+        Name = "Glow", ZIndex = 0, BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        ImageTransparency = 0.8, ImageColor3 = Color3.fromRGB(0, 0, 0),
+        Image = "rbxassetid://4654143143", Size = UDim2.new(0, 375, 0, 125),
+        BackgroundTransparency = 1, Position = UDim2.new(0, -85, 0, -35)
+    })
+
+    -- Title (RichText)
+    local NotificationTitle = BuildElement("TextLabel", MainFrame, {
+        Name = "NotificationTitle", BorderSizePixel = 0, TextSize = 14,
+        TextXAlignment = isLeftSide and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left,
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        FontFace = Font.new("rbxasset://fonts/families/FredokaOne.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal),
+        TextColor3 = Color3.fromRGB(255, 255, 255), BackgroundTransparency = 1,
+        Size = UDim2.new(0, notifWidth - 20, 0, 20), Position = UDim2.new(0, 20, 0, 0),
+        Text = titleText, RichText = richText
+    })
+    BuildElement("UIGradient", NotificationTitle, {
+        Color = ColorSequence.new{ColorSequenceKeypoint.new(0, typeColor), ColorSequenceKeypoint.new(1, Color3.new(1,1,1))}
+    })
+
+    -- Description (RichText) - Sized using our new descHeight
+    BuildElement("TextLabel", MainFrame, {
+        Name = "NotificationDescription", TextWrapped = true, BorderSizePixel = 0, TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left, TextTransparency = 0.6,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        FontFace = Font.new("rbxasset://fonts/families/FredokaOne.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal),
+        TextColor3 = Color3.fromRGB(255, 255, 255), BackgroundTransparency = 1,
+        Size = UDim2.new(0, notifWidth - 20, 0, descHeight), Position = UDim2.new(0, 10, 0, 22),
+        Text = descText, RichText = richText
+    })
+
+    local currentY = 22 + descHeight + 5
+
+    -- Custom image
+    if customImage then
+        BuildElement("ImageLabel", MainFrame, {
+            Name = "CustomImage", Size = UDim2.new(0, notifWidth - 20, 0, imageHeight),
+            Position = UDim2.new(0, 10, 0, currentY),
+            BackgroundTransparency = 1, Image = customImage,
+            ImageColor3 = Color3.fromRGB(255, 255, 255), ScaleType = Enum.ScaleType.Fit
+        })
+        currentY = currentY + imageHeight + 5
+    end
+
+    -- Progress bar
+    local ProgressFrame, ProgressFill
+    if progress then
+        ProgressFrame = BuildElement("Frame", MainFrame, {
+            Name = "ProgressFrame", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(255,255,255),
+            Size = UDim2.new(1, -20, 0, PROGRESS_HEIGHT),
+            Position = UDim2.new(0, 10, 0, currentY + 2),
+            BackgroundTransparency = 0.85, UICorner = true
+        })
+        ProgressFill = BuildElement("Frame", ProgressFrame, {
+            Name = "ProgressFill", BorderSizePixel = 0, BackgroundColor3 = typeColor,
+            Size = UDim2.new(progress/100, 0, 1, 0),
+            BackgroundTransparency = 0, UICorner = true
+        })
+        currentY = currentY + PROGRESS_HEIGHT + PROGRESS_PADDING + 4
+    end
+
+    -- Duration bar and timer label
+    local DurationFrame = BuildElement("Frame", MainFrame, {
+        Name = "DurationFrame", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        Size = UDim2.new(0, notifWidth - 50, 0, 5),
+        Position = UDim2.new(0, 25, 0, notifHeight - 10), BackgroundTransparency = 0.7, UICorner = true
+    })
+    local TimerLabel = nil
+    if showTimer and duration > 0 then
+        TimerLabel = BuildElement("TextLabel", MainFrame, {
+            Name = "TimerLabel", Text = "", TextSize = 9, TextColor3 = Color3.fromRGB(255,255,255),
+            BackgroundTransparency = 1, Size = UDim2.new(0, 30, 0, 12),
+            Position = UDim2.new(1, -35, 1, -18), AnchorPoint = Vector2.new(1,0),
+            TextTransparency = 0.5
+        })
+    end
+
+    -- Border, TypeEffect, CloseButton
+    BuildElement("ImageLabel", MainFrame, {
+        Name = "Border", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        ImageTransparency = 0.7, Image = "rbxassetid://120997033468887",
+        Size = UDim2.new(0, 70, 0, 70), BackgroundTransparency = 1, Rotation = -90,
+        Position = isLeftSide and UDim2.new(0, 45, 0, -25) or UDim2.new(0, notifWidth - 45, 0, -25)
+    })
+
+    BuildElement("Frame", MainFrame, {
+        Name = "TypeEffect", ZIndex = 0, BorderSizePixel = 0, BackgroundColor3 = typeColor,
+        Size = UDim2.new(0, 20, 0, notifHeight),
+        Position = isLeftSide and UDim2.new(1, -17, 0, 0) or UDim2.new(0, -3, 0, 0), UICorner = true
+    })
+
+    local CloseButton = BuildElement("TextButton", MainFrame, {
+        Name = "CloseButton", BorderSizePixel = 0,
+        TextXAlignment = Enum.TextXAlignment.Center, TextSize = 18,
+        TextColor3 = Color3.fromRGB(255, 255, 255),
+        TextYAlignment = Enum.TextYAlignment.Center,
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        FontFace = Font.new("rbxasset://fonts/families/FredokaOne.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal),
+        BackgroundTransparency = 1, Size = UDim2.new(0, 20, 0, 20), AnchorPoint = Vector2.new(0, 0),
+        Position = isLeftSide and UDim2.new(0, 10, 0, 0) or UDim2.new(0, notifWidth - 30, 0, 0),
+        Text = "x"
+    })
+
+    local FrameEffect = BuildElement("Frame", MainFrame, {
+        Name = "FrameEffect", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        Size = UDim2.new(0, notifWidth, 0, 20),
+        Position = UDim2.new(0, 0, 0, notifHeight - 20), BackgroundTransparency = 0.85, UICorner = true
+    })
+    BuildElement("Frame", FrameEffect, {
+        Name = "FrameEffect2", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+        Size = UDim2.new(0, notifWidth, 0, 12)
+    })
+
+    if not customImage then
+        BuildElement("ImageLabel", MainFrame, {
+            Name = "TypeIcon", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+            ImageColor3 = typeColor, Image = iconId,
+            Size = UDim2.new(0, 15, 0, 15), BackgroundTransparency = 1,
+            Position = isLeftSide and UDim2.new(1, -18, 0, 3) or UDim2.new(0, 3, 0, 3)
+        })
+    end
+
+    if onHoverEnter then MainFrame.MouseEnter:Connect(function() pcall(onHoverEnter) end) end
+    if onHoverLeave then MainFrame.MouseLeave:Connect(function() pcall(onHoverLeave) end) end
+
+    -- ====== Define closeUI before buttons ======
+    local isClosing = false
+    local isSticky = (duration == 0 or duration == math.huge)
+    local tweenBar
+    if isSticky then
+        DurationFrame.Visible = false
+        if TimerLabel then TimerLabel.Visible = false end
+    else
+        tweenBar = TweenService:Create(DurationFrame, TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out), {
+            Size = UDim2.new(0, 0, 0, 5)
+        })
+    end
+
+    local notifData = {
+        Frame = MainFrame, Gui = ScreenGui, id = id, closed = false,
+        positionData = { baseX = pos.X, baseY = pos.Y, isBottom = isBottom, posType = positionType },
+        config = config,
+        progressBar = ProgressFill,
+        duration = duration,
+        durationFrame = DurationFrame,
+        timerLabel = TimerLabel,
+        closeFunction = nil,
+        positionType = positionType,
+        groupKey = groupKey,
+    }
+
+    local closeUI
+    closeUI = function(forcedByButton)
+        if isClosing then return end
+        isClosing = true
+        notifData.closed = true
+        activeClosers[notifData] = nil
+        if tweenBar and tweenBar.PlaybackState == Enum.PlaybackState.Playing then
+            tweenBar:Cancel()
+        end
+        if notifData.timerConn then
+            notifData.timerConn:Disconnect()
+            notifData.timerConn = nil
+        end
+
+        if groupKey and notificationGroups[groupKey] then
+            notificationGroups[groupKey].count = math.max(0, notificationGroups[groupKey].count - 1)
+            if notificationGroups[groupKey].count == 0 then
+                notificationGroups[groupKey] = nil
+            end
+        end
+
+        if forcedByButton then
+            TweenService:Create(CloseButton, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                TextColor3 = Color3.fromRGB(255, 82, 82),
+                Rotation = 360,
+                TextTransparency = 1
+            }):Play()
+            TweenService:Create(DurationFrame, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Size = UDim2.new(0, 0, 0, 5),
+                BackgroundColor3 = Color3.fromRGB(255, 82, 82)
+            }):Play()
+            task.wait(0.35)
+        end
+
+        if onClose then pcall(onClose) end
+
+        local list = notificationsByPosition[positionType]
+        if list then
+            for i, v in ipairs(list) do
+                if v == notifData then
+                    table.remove(list, i)
+                    break
+                end
+            end
+            updatePositionsForPosition(positionType)
+        end
+
+        if MainFrame and MainFrame.Parent then
+            local outTween = TweenService:Create(MainFrame, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
+                Position = UDim2.new(1, 50, 0, MainFrame.Position.Y.Offset)
+            })
+            outTween:Play()
+            outTween.Completed:Connect(function() ScreenGui:Destroy() end)
+        end
+
+        task.spawn(processQueue)
+    end
+    notifData.closeFunction = closeUI
+
+    -- ====== Create buttons ======
+    if #buttons > 0 then
+        local buttonRow = BuildElement("Frame", MainFrame, {
+            Name = "ButtonRow", BorderSizePixel = 0, BackgroundTransparency = 1,
+            Size = UDim2.new(1, -20, 0, BUTTON_HEIGHT),
+            Position = UDim2.new(0, 10, 0, currentY + 2)
+        })
+        BuildElement("UIListLayout", buttonRow, {
+            FillDirection = Enum.FillDirection.Horizontal,
+            HorizontalAlignment = Enum.HorizontalAlignment.Center,
+            VerticalAlignment = Enum.VerticalAlignment.Center,
+            Padding = UDim.new(0, 8)
+        })
+        local tooltipGui = nil
+        for i, btn in ipairs(buttons) do
+            local btnText = btn.Text or "Button"
+            local callback = btn.Callback
+            local btnColor = btn.ButtonColor or Color3.fromRGB(255,255,255)
+            local textColor = btn.TextColor or Color3.fromRGB(255,255,255)
+            local btnIcon = btn.Icon and resolveImageInput(btn.Icon)
+            local tooltipText = btn.Tooltip
+
+            local btnFrame = BuildElement("TextButton", buttonRow, {
+                Name = "Btn_" .. i,
+                Size = UDim2.new(#buttons == 1 and 0.6 or 0.5, -4, 1, 0),
+                BackgroundTransparency = 0.85,
+                BackgroundColor3 = btnColor,
+                Text = btnText,
+                TextColor3 = textColor,
+                TextSize = 12,
+                FontFace = Font.new("rbxasset://fonts/families/FredokaOne.json", Enum.FontWeight.SemiBold),
+                BorderSizePixel = 0,
+                UICorner = true
+            })
+            if btnIcon then
+                local iconLabel = BuildElement("ImageLabel", btnFrame, {
+                    Name = "BtnIcon", Size = UDim2.new(0, 14, 0, 14),
+                    Position = UDim2.new(0, 4, 0.5, 0), AnchorPoint = Vector2.new(0,0.5),
+                    BackgroundTransparency = 1, Image = btnIcon,
+                    ImageColor3 = textColor
+                })
+                btnFrame.Text = "  " .. btnText
+                btnFrame.TextXAlignment = Enum.TextXAlignment.Left
+            end
+
+            btnFrame.MouseButton1Click:Connect(function()
+                if type(callback) == "function" then
+                    local success, result = pcall(callback, function()
+                        if not notifData.closed then closeUI(true) end
+                    end)
+                    if success and result == false then
+                        return
+                    elseif not success then
+                        warn("[NoyaUI] Button callback error:", result)
+                    end
+                end
+                closeUI(true)
+            end)
+
+            if tooltipText then
+                local conns = {}
+                local enterConn = btnFrame.MouseEnter:Connect(function()
+                    if not tooltipGui then
+                        tooltipGui = Instance.new("ScreenGui")
+                        tooltipGui.Parent = ParentTarget
+                        tooltipGui.IgnoreGuiInset = true
+                        local tip = Instance.new("TextLabel")
+                        tip.Parent = tooltipGui
+                        tip.Size = UDim2.new(0, 100, 0, 20)
+                        tip.BackgroundColor3 = Color3.fromRGB(40,40,40)
+                        tip.TextColor3 = Color3.fromRGB(255,255,255)
+                        tip.Text = tooltipText
+                        tip.TextSize = 12
+                        tip.Font = Enum.Font.Gotham
+                        tip.BackgroundTransparency = 0.1
+                        tip.BorderSizePixel = 0
+                        tip.Visible = true
+                        tip.Position = UDim2.new(0, btnFrame.AbsolutePosition.X + btnFrame.AbsoluteSize.X/2 - 50, 0, btnFrame.AbsolutePosition.Y - 25)
+                        local moveConn = RunService.RenderStepped:Connect(function()
+                            if not btnFrame.Parent then
+                                moveConn:Disconnect()
+                                if tooltipGui then tooltipGui:Destroy() end
+                                return
+                            end
+                            tip.Position = UDim2.new(0, btnFrame.AbsolutePosition.X + btnFrame.AbsoluteSize.X/2 - 50, 0, btnFrame.AbsolutePosition.Y - 25)
+                        end)
+                        conns.moveConn = moveConn
+                    end
+                end)
+                local leaveConn = btnFrame.MouseLeave:Connect(function()
+                    if tooltipGui then
+                        tooltipGui:Destroy()
+                        tooltipGui = nil
+                    end
+                    if conns.moveConn then
+                        conns.moveConn:Disconnect()
+                        conns.moveConn = nil
+                    end
+                end)
+                tooltipConnections[btnFrame] = { enter = enterConn, leave = leaveConn }
+            end
+
+            btnFrame.MouseEnter:Connect(function()
+                TweenService:Create(btnFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.7}):Play()
+            end)
+            btnFrame.MouseLeave:Connect(function()
+                TweenService:Create(btnFrame, TweenInfo.new(0.1), {BackgroundTransparency = 0.85}):Play()
+            end)
+        end
+        currentY = currentY + BUTTON_HEIGHT + 4
+    end
+
+    -- Timer loop
+    if not isSticky and TimerLabel then
+        local startTime = tick()
+        local timerConn = RunService.RenderStepped:Connect(function()
+            if isClosing or not TimerLabel.Parent then
+                timerConn:Disconnect()
+                return
+            end
+            local elapsed = tick() - startTime
+            local remaining = math.max(0, duration - elapsed)
+            TimerLabel.Text = string.format("%.0fs", remaining)
+            if remaining <= 0 then
+                TimerLabel.Text = ""
+            end
+        end)
+        notifData.timerConn = timerConn
+    end
+
+    -- Insert into active list
+    local newIndex = #positionList + 1
+    local finalX, finalY = computePosition(notifData, newIndex)
+    table.insert(positionList, notifData)
+
+    MainFrame.Position = UDim2.new(1, 50, 0, finalY)
+    updatePositionsForPosition(positionType)
+
+    local tweenIn = TweenService:Create(MainFrame, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
+        Position = UDim2.new(0, finalX, 0, finalY)
+    })
+    tweenIn:Play()
+
+    -- Sound
+    local sound = Instance.new("Sound", MainFrame)
+    sound.Volume = 0.5
+    if soundId then
+        sound.SoundId = soundId
+    else
+        if notifType == "Success" then
+            sound.SoundId = "rbxassetid://130201387574815"
+        elseif notifType == "Error" then
+            sound.SoundId = "rbxassetid://133843340754810"
+        elseif notifType == "Warn" then
+            sound.SoundId = "rbxassetid://107294127858629"
+        else
+            sound.SoundId = "rbxassetid://130201387574815"
+        end
+    end
+    sound:Play()
+    Debris:AddItem(sound, 2)
+
+    tweenIn.Completed:Connect(function()
+        if not isClosing and tweenBar then tweenBar:Play() end
+    end)
+
+    if not isSticky then
+        tweenBar.Completed:Connect(function()
+            if not isClosing then closeUI(false) end
+        end)
+    end
+
+    activeClosers[notifData] = closeUI
+    CloseButton.MouseButton1Click:Connect(function() closeUI(true) end)
+
+    if not isSticky then
+        MainFrame.MouseEnter:Connect(function()
+            if tweenBar and tweenBar.PlaybackState == Enum.PlaybackState.Playing then
+                tweenBar:Pause()
+            end
+        end)
+        MainFrame.MouseLeave:Connect(function()
+            if tweenBar and tweenBar.PlaybackState == Enum.PlaybackState.Paused then
+                tweenBar:Play()
+            end
+        end)
+    end
+
+    notifData.progressBar = ProgressFill
+    return notifData
+end
+
+-- ========== UPDATE NOTIFICATION ==========
+function NoyaUI:Update(id, newConfig)
+    if not id then return nil end
+
+    for _, list in pairs(notificationsByPosition) do
+        for _, notif in ipairs(list) do
+            if notif and notif.id == id and not notif.closed and notif.Frame then
+                if newConfig.Title then
+                    local titleLabel = notif.Frame:FindFirstChild("NotificationTitle")
+                    if titleLabel then titleLabel.Text = newConfig.Title end
+                end
+                if newConfig.Desc then
+                    local descLabel = notif.Frame:FindFirstChild("NotificationDescription")
+                    if descLabel then descLabel.Text = newConfig.Desc end
+                end
+                if newConfig.Progress ~= nil and notif.progressBar then
+                    notif.progressBar.Size = UDim2.new(newConfig.Progress/100, 0, 1, 0)
+                end
+                if newConfig.Duration and notif.duration > 0 then
+                    notif.duration = newConfig.Duration
+                    if notif.timerConn then
+                        notif.timerConn:Disconnect()
+                        notif.timerConn = nil
+                    end
+                    if notif.timerLabel then
+                        local startTime = tick()
+                        notif.timerConn = RunService.RenderStepped:Connect(function()
+                            if notif.closed or not notif.timerLabel.Parent then
+                                notif.timerConn:Disconnect()
+                                return
+                            end
+                            local elapsed = tick() - startTime
+                            local remaining = math.max(0, notif.duration - elapsed)
+                            notif.timerLabel.Text = string.format("%.0fs", remaining)
+                            if remaining <= 0 then
+                                notif.timerLabel.Text = ""
+                            end
+                        end)
+                    end
+                end
+                if newConfig.Position then
+                    NoyaUI:Move(id, newConfig.Position)
+                end
+                return notif
+            end
+        end
+    end
+
+    for _, queued in ipairs(notificationQueue) do
+        if queued and queued.config and queued.config.ID == id then
+            for k, v in pairs(newConfig) do
+                queued.config[k] = v
+            end
+            return { id = id, queued = true, updated = true }
+        end
+    end
+
+    return nil
+end
+
+-- ========== DYNAMIC POSITION CHANGE ==========
+function NoyaUI:Move(id, newPosition)
+    for _, list in pairs(notificationsByPosition) do
+        for i, notif in ipairs(list) do
+            if notif and notif.id == id and not notif.closed then
+                table.remove(list, i)
+                updatePositionsForPosition(notif.positionType)
+                notif.positionData.posType = newPosition
+                local pos = POSITIONS[newPosition] or POSITIONS.BottomRight
+                notif.positionData.baseX = pos.X
+                notif.positionData.baseY = pos.Y
+                notif.positionData.isBottom = (newPosition == "BottomLeft" or newPosition == "BottomRight")
+                notif.positionType = newPosition
+                if not notificationsByPosition[newPosition] then
+                    notificationsByPosition[newPosition] = {}
+                end
+                table.insert(notificationsByPosition[newPosition], notif)
+                updatePositionsForPosition(newPosition)
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- ========== HELPER ==========
+function notify(key, extra)
+    local cfg = { Duration = 5, Type = "Info" }
+    local args = {
+        Title = extra and extra.Title or key,
+        Desc = extra and extra.Desc or "",
+        Duration = cfg.Duration,
+        Type = cfg.Type,
+    }
+    if extra then
+        for k, v in pairs(extra) do args[k] = v end
+    end
+    NoyaUI:Notify(args)
+end
+
+return NoyaUI
