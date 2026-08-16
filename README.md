@@ -30,11 +30,15 @@ NoyaUI is a fully‑featured, standalone notification system for Roblox scripts.
 ## 🚀 2. Installation
 
 ### ✅ Primary Method (Recommended)
-Load the script from your hosted source using `loadstring`:
+Load the UILibrary from the github using `loadstring`:
 ```lua
 local NoyaUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/storming-acc/notification/refs/heads/main/NoyaUI_library"))()
 ```
 
+### Beta (might have errors but has more features)
+```lua
+local NoyaUI = loadstring(game:HttpGet("https://pastebin.com/raw/psRQd8TW"))()
+```
 ### 📦 Alternative Method – Paste the Full Code
 Copy the entire NoyaUI script and paste it at the top of your main script.
 
