@@ -129,13 +129,6 @@ function BuildElement(class, parent, props)
 end
 
 -- ========== POSITIONS ==========
-local POSITIONS = {
-    TopRight    = { X = 550, Y = 1 },
-    TopLeft     = { X = 1,   Y = 1 },
-    BottomRight = { X = 550, Y = 165 },
-    BottomLeft  = { X = 1,   Y = 165 },
-    Center      = { X = 255, Y = 100 },
-}
 local HORIZONTAL_SPACING = 220
 local VERTICAL_SPACING = 10
 
@@ -144,26 +137,58 @@ function computePosition(notifData, indexInGroup)
     local notifWidth = notifData.Frame.Size.X.Offset
     local notifHeight = notifData.Frame.Size.Y.Offset
     local posType = data.posType
-
-    if posType == "Center" then
-        local centerX = data.baseX
-        if indexInGroup == 1 then
-            return centerX, data.baseY
-        elseif indexInGroup % 2 == 0 then
-            local offset = (indexInGroup // 2) * HORIZONTAL_SPACING
-            return centerX - offset, data.baseY
-        else
-            local offset = ((indexInGroup - 1) // 2) * HORIZONTAL_SPACING
-            return centerX + offset, data.baseY
-        end
-    else
-        local isBottom = data.isBottom
-        if isBottom then
-            return data.baseX, data.baseY - ((indexInGroup - 1) * (notifHeight + VERTICAL_SPACING))
-        else
-            return data.baseX, data.baseY + ((indexInGroup - 1) * (notifHeight + VERTICAL_SPACING))
+    
+    local camera = workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize or Vector2.new(1920, 1080)
+    local marginX = 25
+    local marginY = 25
+    
+    local list = notificationsByPosition[posType] or {}
+    
+    -- Accumulate the dynamic height of each previous notification in the stack
+    local accumulatedHeight = 0
+    for j = 1, indexInGroup - 1 do
+        local prevNotif = list[j]
+        if prevNotif and prevNotif.Frame and prevNotif.Frame.Parent then
+            accumulatedHeight = accumulatedHeight + prevH_Offset(prevNotif) + VERTICAL_SPACING
         end
     end
+
+    local baseX = 0
+    local baseY = 0
+
+    if posType == "TopRight" then
+        baseX = viewport.X - notifWidth - marginX
+        baseY = marginY + accumulatedHeight
+    elseif posType == "TopLeft" then
+        baseX = marginX
+        baseY = marginY + accumulatedHeight
+    elseif posType == "BottomRight" then
+        baseX = viewport.X - notifWidth - marginX
+        baseY = viewport.Y - notifHeight - marginY - accumulatedHeight
+    elseif posType == "BottomLeft" then
+        baseX = marginX
+        baseY = viewport.Y - notifHeight - marginY - accumulatedHeight
+    elseif posType == "Center" then
+        baseX = (viewport.X / 2) - (notifWidth / 2)
+        baseY = (viewport.Y / 2) - (notifHeight / 2)
+        if indexInGroup > 1 then
+            if indexInGroup % 2 == 0 then
+                baseX = baseX - (math.floor(indexInGroup / 2) * HORIZONTAL_SPACING)
+            else
+                baseX = baseX + (math.floor((indexInGroup - 1) / 2) * HORIZONTAL_SPACING)
+            end
+        end
+    else
+        baseX = viewport.X - notifWidth - marginX
+        baseY = viewport.Y - notifHeight - marginY - accumulatedHeight
+    end
+
+    return baseX, baseY
+end
+
+function prevH_Offset(notif)
+    return (notif.Frame and notif.Frame.Size.Y.Offset > 0) and notif.Frame.Size.Y.Offset or 55
 end
 
 function updatePositionsForPosition(positionKey)
@@ -285,39 +310,37 @@ function NoyaUI:Notify(config)
     local PROGRESS_HEIGHT = 6
     local PROGRESS_PADDING = 4
     
-    -- Dynamic Custom Size
-    local notifWidth = config.Width or 200
+
+    local camera = workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize or Vector2.new(1920, 1080)
+
+    -- Dynamic Custom Size (Clamped to Screen Width)
+    local maxWidth = viewport.X - 40
+    local notifWidth = math.min(config.Width or 200, maxWidth)
 
     -- Dynamic Text Scaling Calculation
     local descHeight = 28
+    local descWidth = notifWidth - 32 
+    
     if autoSize and descText and descText ~= "" then
-        -- Strip rich text tags for accurate boundary measurement
-        local cleanText = descText
-        if richText then cleanText = cleanText:gsub("<[^>]+>", "") end
-        
-        local bounds = TextService:GetTextSize(
-            cleanText, 
-            10, 
-            Enum.Font.Gotham, -- Using Gotham as approximation for FredokaOne bounds
-            Vector2.new(notifWidth - 20, 10000)
-        )
+        local cleanText = richText and descText:gsub("<[^>]+>", "") or descText
+        local bounds = TextService:GetTextSize(cleanText, 10, Enum.Font.Gotham, Vector2.new(descWidth, 10000))
         descHeight = math.max(28, bounds.Y + 4)
     end
 
     local extraHeight = 0
     if #buttons > 0 then extraHeight = BUTTON_HEIGHT + BUTTON_GAP + 4 end
     if progress then extraHeight = extraHeight + PROGRESS_HEIGHT + PROGRESS_PADDING + 4 end
+    local imageHeight = customImage and IMAGE_HEIGHT or 0
 
-    local imageHeight = 0
-    if customImage then imageHeight = IMAGE_HEIGHT end
+    local notifHeight = config.Height and (config.Height + imageHeight + (imageHeight > 0 and 5 or 0) + extraHeight) 
+                        or (22 + descHeight + (imageHeight > 0 and imageHeight + 5 or 0) + extraHeight + 15)
 
-    local notifHeight
-    if config.Height then
-        -- Force Exact Override
-        notifHeight = config.Height + imageHeight + (imageHeight > 0 and 5 or 0) + extraHeight
-    else
-        -- Perfect Auto Size Layout
-        notifHeight = 22 + descHeight + (imageHeight > 0 and imageHeight + 5 or 0) + extraHeight + 15
+    -- Clamp Height so it never goes off the top/bottom of the screen
+    local maxHeight = viewport.Y - 60
+    if notifHeight > maxHeight then
+        notifHeight = maxHeight
+        descHeight = maxHeight - (22 + (imageHeight > 0 and imageHeight + 5 or 0) + extraHeight + 15)
     end
 
     local isLeftSide = (positionType == "TopLeft" or positionType == "BottomLeft")
@@ -346,9 +369,6 @@ function NoyaUI:Notify(config)
         notificationGroups[groupKey].count = notificationGroups[groupKey].count + 1
     end
 
-    local pos = POSITIONS[positionType] or POSITIONS.BottomRight
-    local isBottom = (positionType == "BottomLeft" or positionType == "BottomRight")
-
     if not notificationsByPosition[positionType] then
         notificationsByPosition[positionType] = {}
     end
@@ -364,6 +384,7 @@ function NoyaUI:Notify(config)
     local ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "NoyaNotificationLibrary"
     ScreenGui.Parent = ParentTarget
+    ScreenGui.IgnoreGuiInset = true -- [FIX] Maps 1:1 with true screen pixels
     ScreenGui.ClipToDeviceSafeArea = false
     ScreenGui.ResetOnSpawn = false
 
@@ -389,21 +410,26 @@ function NoyaUI:Notify(config)
         BackgroundTransparency = 1, Position = UDim2.new(0, -85, 0, -35)
     })
 
-    -- Title (RichText)
+    -- Title (RichText) [BUG FIX] Properly avoids close button and icons
+    local titlePosX = isLeftSide and 30 or 25
+    local titleWidth = notifWidth - 60
+    
     local NotificationTitle = BuildElement("TextLabel", MainFrame, {
         Name = "NotificationTitle", BorderSizePixel = 0, TextSize = 14,
         TextXAlignment = isLeftSide and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left,
         BackgroundColor3 = Color3.fromRGB(255, 255, 255),
         FontFace = Font.new("rbxasset://fonts/families/FredokaOne.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal),
         TextColor3 = Color3.fromRGB(255, 255, 255), BackgroundTransparency = 1,
-        Size = UDim2.new(0, notifWidth - 20, 0, 20), Position = UDim2.new(0, 20, 0, 0),
+        Size = UDim2.new(0, titleWidth, 0, 20), Position = UDim2.new(0, titlePosX, 0, 0),
         Text = titleText, RichText = richText
     })
     BuildElement("UIGradient", NotificationTitle, {
         Color = ColorSequence.new{ColorSequenceKeypoint.new(0, typeColor), ColorSequenceKeypoint.new(1, Color3.new(1,1,1))}
     })
 
-    -- Description (RichText) - Sized using our new descHeight
+    -- Description (RichText) [BUG FIX] Avoids colored sidebars
+    local descPosX = isLeftSide and 10 or 22
+    
     BuildElement("TextLabel", MainFrame, {
         Name = "NotificationDescription", TextWrapped = true, BorderSizePixel = 0, TextSize = 10,
         TextXAlignment = Enum.TextXAlignment.Left, TextTransparency = 0.6,
@@ -411,7 +437,7 @@ function NoyaUI:Notify(config)
         BackgroundColor3 = Color3.fromRGB(255, 255, 255),
         FontFace = Font.new("rbxasset://fonts/families/FredokaOne.json", Enum.FontWeight.Regular, Enum.FontStyle.Normal),
         TextColor3 = Color3.fromRGB(255, 255, 255), BackgroundTransparency = 1,
-        Size = UDim2.new(0, notifWidth - 20, 0, descHeight), Position = UDim2.new(0, 10, 0, 22),
+        Size = UDim2.new(0, descWidth, 0, descHeight), Position = UDim2.new(0, descPosX, 0, 22),
         Text = descText, RichText = richText
     })
 
@@ -461,12 +487,13 @@ function NoyaUI:Notify(config)
         })
     end
 
-    -- Border, TypeEffect, CloseButton
+-- Border, TypeEffect, CloseButton [MIRRORED CORNER FIX]
     BuildElement("ImageLabel", MainFrame, {
         Name = "Border", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(255, 255, 255),
         ImageTransparency = 0.7, Image = "rbxassetid://120997033468887",
-        Size = UDim2.new(0, 70, 0, 70), BackgroundTransparency = 1, Rotation = -90,
-        Position = isLeftSide and UDim2.new(0, 45, 0, -25) or UDim2.new(0, notifWidth - 45, 0, -25)
+        Size = UDim2.new(0, 70, 0, 70), BackgroundTransparency = 1,
+        Rotation = isLeftSide and 180 or -90,
+        Position = isLeftSide and UDim2.new(0, -32, 0, -30) or UDim2.new(0, notifWidth - 45, 0, -25)
     })
 
     BuildElement("Frame", MainFrame, {
@@ -522,17 +549,14 @@ function NoyaUI:Notify(config)
         })
     end
 
+    local isBottom = (positionType == "BottomLeft" or positionType == "BottomRight")
+
     local notifData = {
         Frame = MainFrame, Gui = ScreenGui, id = id, closed = false,
-        positionData = { baseX = pos.X, baseY = pos.Y, isBottom = isBottom, posType = positionType },
-        config = config,
-        progressBar = ProgressFill,
-        duration = duration,
-        durationFrame = DurationFrame,
-        timerLabel = TimerLabel,
-        closeFunction = nil,
-        positionType = positionType,
-        groupKey = groupKey,
+        positionData = { isBottom = isBottom, posType = positionType },
+        config = config, progressBar = ProgressFill, duration = duration,
+        durationFrame = DurationFrame, timerLabel = TimerLabel,
+        closeFunction = nil, positionType = positionType, groupKey = groupKey,
     }
 
     local closeUI
@@ -583,8 +607,10 @@ function NoyaUI:Notify(config)
         end
 
         if MainFrame and MainFrame.Parent then
+            local endXOffset = isLeftSide and -notifWidth - 50 or 50
+            local endScaleX = isLeftSide and 0 or 1
             local outTween = TweenService:Create(MainFrame, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
-                Position = UDim2.new(1, 50, 0, MainFrame.Position.Y.Offset)
+                Position = UDim2.new(endScaleX, endXOffset, 0, MainFrame.Position.Y.Offset)
             })
             outTween:Play()
             outTween.Completed:Connect(function() ScreenGui:Destroy() end)
@@ -729,13 +755,14 @@ function NoyaUI:Notify(config)
     local finalX, finalY = computePosition(notifData, newIndex)
     table.insert(positionList, notifData)
 
-    MainFrame.Position = UDim2.new(1, 50, 0, finalY)
+    local startXOffset = isLeftSide and -notifWidth - 50 or 50
+    local startScaleX = isLeftSide and 0 or 1
+    MainFrame.Position = UDim2.new(startScaleX, startXOffset, 0, finalY)
     updatePositionsForPosition(positionType)
 
     local tweenIn = TweenService:Create(MainFrame, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
         Position = UDim2.new(0, finalX, 0, finalY)
     })
-    tweenIn:Play()
 
     -- Sound
     local sound = Instance.new("Sound", MainFrame)
@@ -854,9 +881,6 @@ function NoyaUI:Move(id, newPosition)
                 table.remove(list, i)
                 updatePositionsForPosition(notif.positionType)
                 notif.positionData.posType = newPosition
-                local pos = POSITIONS[newPosition] or POSITIONS.BottomRight
-                notif.positionData.baseX = pos.X
-                notif.positionData.baseY = pos.Y
                 notif.positionData.isBottom = (newPosition == "BottomLeft" or newPosition == "BottomRight")
                 notif.positionType = newPosition
                 if not notificationsByPosition[newPosition] then
