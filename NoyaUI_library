@@ -1,8 +1,12 @@
--- ========================== NOYAUI NOTIFICATION SYSTEM (ULTIMATE - FINAL FIX) ==========================
--- All features: buttons, colors, icons, rich text, corner radius, custom type icons,
--- progress bar, tooltips, queue, update, timer display, duplicate prevention, grouping,
--- custom sound, dynamic position change. Always returns a table with an ID.
--- [+] ADDED: Automatic Scaling based on Text Size & Full Custom Width/Height Support
+-- ========================== NOYAUI NOTIFICATION SYSTEM (ULTIMATE EDITION) ==========================
+-- Features:
+-- [+] Dual Styles: "v1" (Minimal WindUI card) and "v2" (Full banner with buttons & accents)
+-- [+] Dynamic Auto-Size Text Engine (TextService bounds calculation)
+-- [+] Full Custom Width / Height overrides
+-- [+] Responsive Viewport Anchoring (PC / Mobile / Tablet support)
+-- [+] Stacking for variable-height notifications
+-- [+] Mirrored layout & floating corner accents for left-side positioning
+-- [+] Images, Videos, Decals, Google Drive link converter, Tooltips, Progress Bars, Queueing, Live Updates
 
 -- ========== GLOBALS ==========
 shared.NoyaDismissKey = shared.NoyaDismissKey or Enum.KeyCode.N
@@ -17,8 +21,6 @@ local notificationGroups = shared.NoyaNotificationGroups
 local NoyaUI = {}
 local activeClosers = {}
 local notificationIdCounter = 0
-
--- Store tooltip connections separately
 local tooltipConnections = {}
 
 -- ========== SERVICES ==========
@@ -63,7 +65,7 @@ end
 
 local decalCache = {}
 local function getImageId(decalId)
-    if type(decalId) ~= "number" and not decalId:match("^%d+$") then return nil end
+    if type(decalId) ~= "number" and not tostring(decalId):match("^%d+$") then return nil end
     local id = tonumber(decalId)
     if decalCache[id] then return decalCache[id] end
     local url = "https://assetdelivery.roblox.com/v1/asset/?id=" .. tostring(id)
@@ -128,9 +130,13 @@ function BuildElement(class, parent, props)
     return el
 end
 
--- ========== POSITIONS ==========
+-- ========== RESPONSIVE POSITIONS & STACKING ==========
 local HORIZONTAL_SPACING = 220
 local VERTICAL_SPACING = 10
+
+local function prevH_Offset(notif)
+    return (notif.Frame and notif.Frame.Size.Y.Offset > 0) and notif.Frame.Size.Y.Offset or 55
+end
 
 function computePosition(notifData, indexInGroup)
     local data = notifData.positionData
@@ -145,7 +151,7 @@ function computePosition(notifData, indexInGroup)
     
     local list = notificationsByPosition[posType] or {}
     
-    -- Accumulate the dynamic height of each previous notification in the stack
+    -- Accumulate exact heights of preceding notifications
     local accumulatedHeight = 0
     for j = 1, indexInGroup - 1 do
         local prevNotif = list[j]
@@ -185,10 +191,6 @@ function computePosition(notifData, indexInGroup)
     end
 
     return baseX, baseY
-end
-
-function prevH_Offset(notif)
-    return (notif.Frame and notif.Frame.Size.Y.Offset > 0) and notif.Frame.Size.Y.Offset or 55
 end
 
 function updatePositionsForPosition(positionKey)
@@ -247,8 +249,149 @@ function NoyaUI:GenerateID()
     return "Noya_" .. tostring(notificationIdCounter)
 end
 
--- ========== MAIN NOTIFY ==========
-function NoyaUI:Notify(config)
+-- ==============================================================================
+-- STYLE V1: MINIMAL WINDUI CARD NOTIFICATION
+-- ==============================================================================
+function NoyaUI:NotifyV1(Config)
+    Config = Config or {}
+    local Title = Config.Title or "Notification"
+    local Content = Config.Content or Config.Desc or ""
+    local Icon = Config.Icon or nil
+    local Duration = Config.Duration or 3
+    local notifType = Config.Type or "Info"
+    local autoSize = Config.AutoSize == nil and true or Config.AutoSize
+    local customWidth = Config.Width or 300
+
+    local typeColor = Color3.fromRGB(158, 198, 255)
+    if notifType == "Error" then
+        typeColor = Color3.fromRGB(255, 82, 82)
+    elseif notifType == "Success" then
+        typeColor = Color3.fromRGB(145, 255, 128)
+    elseif notifType == "Warn" then
+        typeColor = Color3.fromRGB(255, 225, 117)
+    end
+
+    if not NoyaUI.NotificationHolderV1 then
+        local ScreenGui = Instance.new("ScreenGui")
+        ScreenGui.Name = "NoyaUI_V1_Holder"
+        ScreenGui.Parent = ParentTarget
+        ScreenGui.IgnoreGuiInset = true
+        ScreenGui.ResetOnSpawn = false
+
+        local Holder = Instance.new("Frame")
+        Holder.Name = "NotificationHolder"
+        Holder.Size = UDim2.new(0, 320, 1, -40)
+        Holder.Position = UDim2.new(1, -335, 0, 20)
+        Holder.BackgroundTransparency = 1
+        Holder.Parent = ScreenGui
+
+        local UIListLayout = Instance.new("UIListLayout")
+        UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+        UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+        UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        UIListLayout.Padding = UDim.new(0, 8)
+        UIListLayout.Parent = Holder
+
+        NoyaUI.NotificationHolderV1 = Holder
+    end
+
+    local textPaddingX = Icon and 42 or 24
+    local contentWidth = customWidth - textPaddingX
+    local contentHeight = 20
+
+    if autoSize and Content ~= "" then
+        local cleanText = Config.RichText and Content:gsub("<[^>]+>", "") or Content
+        local bounds = TextService:GetTextSize(cleanText, 13, Enum.Font.BuilderSans, Vector2.new(contentWidth, 10000))
+        contentHeight = math.max(20, bounds.Y + 2)
+    end
+
+    local cardHeight = Config.Height or (34 + contentHeight + 14)
+
+    local Card = Instance.new("Frame")
+    Card.Name = "NotificationCard_V1"
+    Card.Size = UDim2.new(0, customWidth, 0, cardHeight)
+    Card.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
+    Card.BackgroundTransparency = 1
+    Card.ClipsDescendants = true
+    Card.Parent = NoyaUI.NotificationHolderV1
+
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 8)
+    Corner.Parent = Card
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Color3.fromRGB(45, 45, 55)
+    Stroke.Transparency = 1
+    Stroke.Parent = Card
+
+    local textOffsetX = 12
+    if Icon then
+        textOffsetX = 34
+        local IconLabel = Instance.new("ImageLabel")
+        IconLabel.Name = "Icon"
+        IconLabel.Image = resolveImageInput(Icon) or "rbxassetid://70718918423383"
+        IconLabel.ImageColor3 = typeColor
+        IconLabel.BackgroundTransparency = 1
+        IconLabel.Position = UDim2.new(0, 10, 0, 10)
+        IconLabel.Size = UDim2.new(0, 18, 0, 18)
+        IconLabel.Parent = Card
+    end
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Name = "Title"
+    TitleLabel.Text = Title
+    TitleLabel.Font = Enum.Font.BuilderSansBold
+    TitleLabel.TextSize = 14
+    TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Position = UDim2.new(0, textOffsetX, 0, 10)
+    TitleLabel.Size = UDim2.new(1, -(textOffsetX + 12), 0, 18)
+    TitleLabel.RichText = Config.RichText or false
+    TitleLabel.Parent = Card
+
+    local ContentLabel = Instance.new("TextLabel")
+    ContentLabel.Name = "Content"
+    ContentLabel.Text = Content
+    ContentLabel.Font = Enum.Font.BuilderSans
+    ContentLabel.TextSize = 13
+    ContentLabel.TextColor3 = Color3.fromRGB(180, 180, 190)
+    ContentLabel.TextXAlignment = Enum.TextXAlignment.Left
+    ContentLabel.TextYAlignment = Enum.TextYAlignment.Top
+    ContentLabel.TextWrapped = true
+    ContentLabel.BackgroundTransparency = 1
+    ContentLabel.Position = UDim2.new(0, textOffsetX, 0, 30)
+    ContentLabel.Size = UDim2.new(1, -(textOffsetX + 12), 0, contentHeight)
+    ContentLabel.RichText = Config.RichText or false
+    ContentLabel.Parent = Card
+
+    local TweenInfoIn = TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    TweenService:Create(Card, TweenInfoIn, { BackgroundTransparency = 0.05 }):Play()
+    TweenService:Create(Stroke, TweenInfoIn, { Transparency = 0 }):Play()
+
+    if Duration > 0 and Duration ~= math.huge then
+        task.delay(Duration, function()
+            local TweenInfoOut = TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+            local FadeOut = TweenService:Create(Card, TweenInfoOut, { BackgroundTransparency = 1 })
+            TweenService:Create(Stroke, TweenInfoOut, { Transparency = 1 }):Play()
+            FadeOut:Play()
+
+            FadeOut.Completed:Connect(function()
+                Card:Destroy()
+            end)
+        end)
+    end
+
+    return {
+        Frame = Card,
+        Destroy = function() Card:Destroy() end
+    }
+end
+
+-- ==============================================================================
+-- STYLE V2: FULL NOYAUI BANNER NOTIFICATION
+-- ==============================================================================
+function NoyaUI:NotifyV2(config)
     local id = config.ID or NoyaUI:GenerateID()
     config.ID = id
 
@@ -303,24 +446,22 @@ function NoyaUI:Notify(config)
     local buttons = config.Buttons or {}
     if #buttons > 2 then buttons = {buttons[1], buttons[2]} end
 
-    -- Sizing Core Variables
     local BUTTON_HEIGHT = 30
     local BUTTON_GAP = 23
     local IMAGE_HEIGHT = config.ImageHeight or 60
     local PROGRESS_HEIGHT = 6
     local PROGRESS_PADDING = 4
-    
 
     local camera = workspace.CurrentCamera
     local viewport = camera and camera.ViewportSize or Vector2.new(1920, 1080)
 
-    -- Dynamic Custom Size (Clamped to Screen Width)
+    -- Dynamic Custom Size Clamped to Screen
     local maxWidth = viewport.X - 40
     local notifWidth = math.min(config.Width or 200, maxWidth)
 
     -- Dynamic Text Scaling Calculation
     local descHeight = 28
-    local descWidth = notifWidth - 32 
+    local descWidth = notifWidth - 32
     
     if autoSize and descText and descText ~= "" then
         local cleanText = richText and descText:gsub("<[^>]+>", "") or descText
@@ -333,10 +474,9 @@ function NoyaUI:Notify(config)
     if progress then extraHeight = extraHeight + PROGRESS_HEIGHT + PROGRESS_PADDING + 4 end
     local imageHeight = customImage and IMAGE_HEIGHT or 0
 
-    local notifHeight = config.Height and (config.Height + imageHeight + (imageHeight > 0 and 5 or 0) + extraHeight) 
+    local notifHeight = config.Height and (config.Height + imageHeight + (imageHeight > 0 and 5 or 0) + extraHeight)
                         or (22 + descHeight + (imageHeight > 0 and imageHeight + 5 or 0) + extraHeight + 15)
 
-    -- Clamp Height so it never goes off the top/bottom of the screen
     local maxHeight = viewport.Y - 60
     if notifHeight > maxHeight then
         notifHeight = maxHeight
@@ -345,7 +485,6 @@ function NoyaUI:Notify(config)
 
     local isLeftSide = (positionType == "TopLeft" or positionType == "BottomLeft")
 
-    -- Type colors / icons
     local typeColor, defaultIcon
     if notifType == "Error" then
         typeColor = Color3.fromRGB(255, 82, 82)
@@ -369,6 +508,8 @@ function NoyaUI:Notify(config)
         notificationGroups[groupKey].count = notificationGroups[groupKey].count + 1
     end
 
+    local isBottom = (positionType == "BottomLeft" or positionType == "BottomRight")
+
     if not notificationsByPosition[positionType] then
         notificationsByPosition[positionType] = {}
     end
@@ -384,7 +525,7 @@ function NoyaUI:Notify(config)
     local ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "NoyaNotificationLibrary"
     ScreenGui.Parent = ParentTarget
-    ScreenGui.IgnoreGuiInset = true -- [FIX] Maps 1:1 with true screen pixels
+    ScreenGui.IgnoreGuiInset = true -- True pixel alignment
     ScreenGui.ClipToDeviceSafeArea = false
     ScreenGui.ResetOnSpawn = false
 
@@ -394,7 +535,7 @@ function NoyaUI:Notify(config)
     local MainFrame = BuildElement("Frame", Folder, {
         Name = "MainFrame", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(0, 0, 0),
         Size = UDim2.new(0, notifWidth, 0, notifHeight), UICorner = true,
-        ClipsDescendants = true 
+        ClipsDescendants = true
     })
     if MainFrame:FindFirstChild("UICorner") then
         MainFrame.UICorner.CornerRadius = UDim.new(0, cornerRadius)
@@ -410,10 +551,10 @@ function NoyaUI:Notify(config)
         BackgroundTransparency = 1, Position = UDim2.new(0, -85, 0, -35)
     })
 
-    -- Title (RichText) [BUG FIX] Properly avoids close button and icons
+    -- Title (RichText) [Avoids Close Button & Icons]
     local titlePosX = isLeftSide and 30 or 25
     local titleWidth = notifWidth - 60
-    
+
     local NotificationTitle = BuildElement("TextLabel", MainFrame, {
         Name = "NotificationTitle", BorderSizePixel = 0, TextSize = 14,
         TextXAlignment = isLeftSide and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left,
@@ -427,9 +568,9 @@ function NoyaUI:Notify(config)
         Color = ColorSequence.new{ColorSequenceKeypoint.new(0, typeColor), ColorSequenceKeypoint.new(1, Color3.new(1,1,1))}
     })
 
-    -- Description (RichText) [BUG FIX] Avoids colored sidebars
+    -- Description (RichText) [Avoids Colored Sidebars]
     local descPosX = isLeftSide and 10 or 22
-    
+
     BuildElement("TextLabel", MainFrame, {
         Name = "NotificationDescription", TextWrapped = true, BorderSizePixel = 0, TextSize = 10,
         TextXAlignment = Enum.TextXAlignment.Left, TextTransparency = 0.6,
@@ -443,7 +584,7 @@ function NoyaUI:Notify(config)
 
     local currentY = 22 + descHeight + 5
 
-    -- Custom image
+    -- Custom Image
     if customImage then
         BuildElement("ImageLabel", MainFrame, {
             Name = "CustomImage", Size = UDim2.new(0, notifWidth - 20, 0, imageHeight),
@@ -454,7 +595,7 @@ function NoyaUI:Notify(config)
         currentY = currentY + imageHeight + 5
     end
 
-    -- Progress bar
+    -- Progress Bar
     local ProgressFrame, ProgressFill
     if progress then
         ProgressFrame = BuildElement("Frame", MainFrame, {
@@ -471,7 +612,7 @@ function NoyaUI:Notify(config)
         currentY = currentY + PROGRESS_HEIGHT + PROGRESS_PADDING + 4
     end
 
-    -- Duration bar and timer label
+    -- Duration Bar & Timer Label
     local DurationFrame = BuildElement("Frame", MainFrame, {
         Name = "DurationFrame", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(255, 255, 255),
         Size = UDim2.new(0, notifWidth - 50, 0, 5),
@@ -487,7 +628,7 @@ function NoyaUI:Notify(config)
         })
     end
 
--- Border, TypeEffect, CloseButton [MIRRORED CORNER FIX]
+    -- Border Floating Corner Accent [Properly Mirrored & Snug]
     BuildElement("ImageLabel", MainFrame, {
         Name = "Border", BorderSizePixel = 0, BackgroundColor3 = Color3.fromRGB(255, 255, 255),
         ImageTransparency = 0.7, Image = "rbxassetid://120997033468887",
@@ -536,7 +677,7 @@ function NoyaUI:Notify(config)
     if onHoverEnter then MainFrame.MouseEnter:Connect(function() pcall(onHoverEnter) end) end
     if onHoverLeave then MainFrame.MouseLeave:Connect(function() pcall(onHoverLeave) end) end
 
-    -- ====== Define closeUI before buttons ======
+    -- ====== Dismiss & Animation Logic ======
     local isClosing = false
     local isSticky = (duration == 0 or duration == math.huge)
     local tweenBar
@@ -548,8 +689,6 @@ function NoyaUI:Notify(config)
             Size = UDim2.new(0, 0, 0, 5)
         })
     end
-
-    local isBottom = (positionType == "BottomLeft" or positionType == "BottomRight")
 
     local notifData = {
         Frame = MainFrame, Gui = ScreenGui, id = id, closed = false,
@@ -620,7 +759,7 @@ function NoyaUI:Notify(config)
     end
     notifData.closeFunction = closeUI
 
-    -- ====== Create buttons ======
+    -- ====== Buttons ======
     if #buttons > 0 then
         local buttonRow = BuildElement("Frame", MainFrame, {
             Name = "ButtonRow", BorderSizePixel = 0, BackgroundTransparency = 1,
@@ -763,6 +902,7 @@ function NoyaUI:Notify(config)
     local tweenIn = TweenService:Create(MainFrame, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut), {
         Position = UDim2.new(0, finalX, 0, finalY)
     })
+    tweenIn:Play()
 
     -- Sound
     local sound = Instance.new("Sound", MainFrame)
@@ -811,6 +951,18 @@ function NoyaUI:Notify(config)
 
     notifData.progressBar = ProgressFill
     return notifData
+end
+
+-- ========== MAIN ROUTER NOTIFY ==========
+function NoyaUI:Notify(Config)
+    Config = Config or {}
+    local style = string.lower(tostring(Config.Style or "v2"))
+
+    if style == "v1" or style == "wind" or style == "minimal" then
+        return self:NotifyV1(Config)
+    else
+        return self:NotifyV2(Config)
+    end
 end
 
 -- ========== UPDATE NOTIFICATION ==========
@@ -895,7 +1047,7 @@ function NoyaUI:Move(id, newPosition)
     return false
 end
 
--- ========== HELPER ==========
+-- ========== QUICK HELPER ==========
 function notify(key, extra)
     local cfg = { Duration = 5, Type = "Info" }
     local args = {
